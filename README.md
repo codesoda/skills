@@ -10,21 +10,20 @@ Works with **Claude Code**, **Codex**, and **Pi** — `link.sh` fans out symlink
 # Clone to ~/.skills
 git clone git@github.com:codesoda/skills.git ~/.skills
 
-# Add a skill (a folder with a SKILL.md)
-mkdir -p ~/.skills/.agents/skills/my-skill
-cat > ~/.skills/.agents/skills/my-skill/SKILL.md << 'EOF'
----
-name: my-skill
-description: Does something useful
----
-# my-skill
-Instructions for the agent go here.
-EOF
+# Install a skill from the registry
+cd ~/.skills
+npx skills add <skill-name>
+# When prompted:
+#   Scope → choose "project only"
+#   Agent → choose "generic"
+# link.sh handles the per-agent distribution later.
 
 # Link it into a project
 cd ~/my-project
-~/.skills/link.sh my-skill
+~/.skills/link.sh <skill-name>
 ```
+
+You can also create skills manually — just add a folder with a `SKILL.md` under `.agents/skills/`.
 
 ## Folder layout
 
