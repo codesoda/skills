@@ -1,0 +1,8 @@
+.DS_Store
+skills-lock.json
+
+# Ignore all installed skills — they're user-specific
+.agents/skills/*
+
+# Keep the meta-skill (ships with the repo)
+!.agents/skills/meta-skill/

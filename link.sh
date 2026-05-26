@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILLS_HOME="$SCRIPT_DIR/.agents/skills"
+META_SKILL_NAME="meta-skill"
+SCRIPT_NAME="$(basename "$0")"
+
+usage() {
+  cat >&2 <<EOF
+Usage: $SCRIPT_NAME <skill-name> [<skill-name>...] [--meta]
+
+Without --meta (auto install):
+  Symlinks each named skill into ./.agents/skills/<name> so the agent can
+  auto-trigger it. Also ensures ./.claude/skills and ./.codex/skills are
+  folder-level symlinks pointing at ./.agents/skills.
+
+With --meta (on-demand install):
+  Registers each named skill in ./.agents/skills/meta-skills.json instead
+  of symlinking it directly. The meta-skill itself is auto-linked so it
+  can resolve explicit skill invocations at runtime.
+
+Source skills live in $SKILLS_HOME
+EOF
+  exit 1
+}
+
+err() { echo "error: $*" >&2; exit 1; }
+
+META=false
+SKILLS=()
+for arg in "$@"; do
+  case "$arg" in
+    --meta) META=true ;;
+    --help|-h) usage ;;
+    -*) err "unknown flag '$arg'" ;;
+    ''|.|..|*/*) err "invalid skill name '$arg'" ;;
+    *) SKILLS+=("$arg") ;;
+  esac
+done
+
+[ "${#SKILLS[@]}" -ge 1 ] || usage
+
+command -v python3 >/dev/null 2>&1 || err "python3 is required (used for JSON edits)"
+
+is_collection() {
+  local p="$1"
+  [ -d "$p" ] && [ ! -f "$p/SKILL.md" ] && find "$p" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null | grep -q .
+}
+
+for skill in "${SKILLS[@]}"; do
+  if [ -f "$SKILLS_HOME/$skill/SKILL.md" ]; then
+    continue
+  fi
+  if is_collection "$SKILLS_HOME/$skill"; then
+    continue
+  fi
+  echo "error: skill '$skill' not found (expected $SKILLS_HOME/$skill/SKILL.md or a sub-skill collection)" >&2
+  echo "available skills:" >&2
+  ls -1 "$SKILLS_HOME" >&2
+  exit 1
+done
+
+PROJECT_ROOT="$(pwd)"
+PROJECT_AGENTS_SKILLS="$PROJECT_ROOT/.agents/skills"
+PROJECT_CLAUDE_SKILLS="$PROJECT_ROOT/.claude/skills"
+PROJECT_CODEX_SKILLS="$PROJECT_ROOT/.codex/skills"
+PROJECT_PI_SKILLS="$PROJECT_ROOT/.pi/skills"
+
+mkdir -p "$PROJECT_AGENTS_SKILLS"
+
+ensure_folder_symlink() {
+  local link="$1"
+  local target="$2"
+  local parent
+  parent="$(dirname "$link")"
+  mkdir -p "$parent"
+  if [ -L "$link" ]; then
+    local current
+    current="$(readlink "$link")"
+    if [ "$current" = "$target" ]; then
+      echo "  [ok]     $link -> $target"
+      return
+    fi
+    err "$link is a symlink to $current (expected $target)"
+  fi
+  if [ -e "$link" ]; then
+    err "$link exists and is not a symlink; refusing to clobber"
+  fi
+  ln -s "$target" "$link"
+  echo "  [linked] $link -> $target"
+}
+
+echo "Ensuring project skills layout in $PROJECT_ROOT:"
+ensure_folder_symlink "$PROJECT_CLAUDE_SKILLS" "../.agents/skills"
+ensure_folder_symlink "$PROJECT_CODEX_SKILLS" "../.agents/skills"
+ensure_folder_symlink "$PROJECT_PI_SKILLS" "../.agents/skills"
+
+link_skill() {
+  local skill="$1"
+  local src="$SKILLS_HOME/$skill"
+  local dest="$PROJECT_AGENTS_SKILLS/$skill"
+  if [ -L "$dest" ]; then
+    local current
+    current="$(readlink "$dest")"
+    if [ "$current" = "$src" ]; then
+      echo "  [ok]     $dest -> $src"
+      return
+    fi
+    err "$dest exists and points to $current (expected $src)"
+  fi
+  if [ -e "$dest" ]; then
+    err "$dest exists and is not a symlink; refusing to clobber"
+  fi
+  ln -s "$src" "$dest"
+  echo "  [linked] $dest -> $src"
+}
+
+register_meta() {
+  local skill="$1"
+  local src="$SKILLS_HOME/$skill"
+  local skill_md="$src/SKILL.md"
+  local registry="$PROJECT_AGENTS_SKILLS/meta-skills.json"
+
+  python3 - "$registry" "$skill" "$src" "$skill_md" <<'PY'
+import json, os, sys, datetime
+registry_path, name, src, skill_md = sys.argv[1:5]
+if os.path.exists(registry_path):
+    with open(registry_path) as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"error: {registry_path} is not valid JSON ({e}); fix or remove it before re-running", file=sys.stderr)
+            sys.exit(1)
+else:
+    data = {"version": 1, "skills": {}}
+if not isinstance(data, dict) or "skills" not in data:
+    data = {"version": 1, "skills": {}}
+skills = data.setdefault("skills", {})
+existing = skills.get(name)
+now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+if existing:
+    if existing.get("path") == skill_md and existing.get("source") == src:
+        print(f"  [ok]     meta entry for '{name}' already registered")
+        sys.exit(0)
+    print(f"error: meta entry for '{name}' already exists with different path ({existing.get('path')}); remove it manually before re-registering", file=sys.stderr)
+    sys.exit(1)
+skills[name] = {
+    "path": skill_md,
+    "source": src,
+    "registeredAt": now,
+}
+data["skills"] = {k: skills[k] for k in sorted(skills)}
+with open(registry_path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+print(f"  [meta]   registered '{name}' in {registry_path}")
+PY
+}
+
+if $META; then
+  if [ ! -f "$SKILLS_HOME/$META_SKILL_NAME/SKILL.md" ]; then
+    err "meta-skill source missing at $SKILLS_HOME/$META_SKILL_NAME/SKILL.md"
+  fi
+  if [ ! -L "$PROJECT_AGENTS_SKILLS/$META_SKILL_NAME" ]; then
+    echo "Auto-linking the meta-skill itself (required when --meta is used):"
+    link_skill "$META_SKILL_NAME"
+  fi
+
+  echo "Registering skills in meta-skills.json:"
+  for skill in "${SKILLS[@]}"; do
+    if [ "$skill" = "$META_SKILL_NAME" ]; then
+      echo "  [skip]   '$skill' is the meta-skill itself; auto-linked, not meta-registered"
+      continue
+    fi
+    if [ -L "$PROJECT_AGENTS_SKILLS/$skill" ]; then
+      err "'$skill' is already auto-linked at $PROJECT_AGENTS_SKILLS/$skill; cannot also meta-register. Remove the symlink first if you want to convert it."
+    fi
+    if is_collection "$SKILLS_HOME/$skill"; then
+      err "'$skill' is a collection (multiple sub-skills, no top-level SKILL.md); collections can only be auto-linked, not --meta-registered. Re-run without --meta."
+    fi
+    register_meta "$skill"
+  done
+else
+  echo "Linking skills as auto-trigger:"
+  for skill in "${SKILLS[@]}"; do
+    link_skill "$skill"
+  done
+fi
+
+echo "done."
