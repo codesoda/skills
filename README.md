@@ -60,6 +60,23 @@ my-project/
 
 ## link.sh
 
+### Listing available skills (`--list`)
+
+Run `link.sh --list` to see every skill in the source library with its
+description; collections are tagged with their sub-skill count:
+
+```
+$ link.sh --list
+Available skills in ~/.skills/.agents/skills:
+
+  ab-test-setup    When the user wants to plan, design, or implement an A/B…
+  research         [collection] 5 sub-skill(s)
+  …
+```
+
+`--list` takes no skill name and ignores the current directory, so you can run
+it from anywhere to find the name to pass to `link.sh`.
+
 ### Auto mode (default)
 
 Symlinks skills directly into the project so agents auto-discover them:

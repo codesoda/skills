@@ -9,6 +9,11 @@ SCRIPT_NAME="$(basename "$0")"
 usage() {
   cat >&2 <<EOF
 Usage: $SCRIPT_NAME <skill-name> [<skill-name>...] [--meta]
+       $SCRIPT_NAME --list
+
+--list:
+  Print the skills available in the source library (with descriptions) and
+  exit. Does not require a skill name or a project directory.
 
 Without --meta (auto install):
   Symlinks each named skill into ./.agents/skills/<name> so the agent can
@@ -27,11 +32,92 @@ EOF
 
 err() { echo "error: $*" >&2; exit 1; }
 
+is_collection() {
+  local p="$1"
+  [ -d "$p" ] && [ ! -f "$p/SKILL.md" ] && find "$p" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null | grep -q .
+}
+
+# Pull the first line of the `description:` out of a SKILL.md's YAML
+# frontmatter. Handles plain values (`description: text`), quoted values, and
+# block scalars (`description: |` / `>`) whose text sits on indented lines below.
+extract_description() {
+  awk '
+    /^---[[:space:]]*$/ { fence++; if (fence >= 2) exit; next }
+    fence != 1 { next }
+    !indesc && /^[[:space:]]*description:/ {
+      val = $0
+      sub(/^[[:space:]]*description:[[:space:]]*/, "", val)
+      sub(/[[:space:]]+$/, "", val)
+      if (val == "" || val ~ /^[|>][0-9]*[+-]?$/) { indesc = 1; next }
+      gsub(/^"|"$/, "", val)
+      print val
+      exit
+    }
+    indesc {
+      if ($0 ~ /^[[:space:]]*$/) next      # skip blank lines within the block
+      if ($0 !~ /^[[:space:]]/) exit        # un-indented => next key; description was empty
+      sub(/^[[:space:]]+/, "")
+      sub(/[[:space:]]+$/, "")
+      print
+      exit
+    }
+  ' "$1"
+}
+
+# List every skill (and collection) available in the source library, one per
+# line as "name  description", and exit. Independent of any project directory.
+list_skills() {
+  [ -d "$SKILLS_HOME" ] || err "skills home not found at $SKILLS_HOME"
+
+  local -a names=()
+  local d n namecol=0
+  for d in "$SKILLS_HOME"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    names+=("$n")
+    [ "${#n}" -gt "$namecol" ] && namecol="${#n}"
+  done
+
+  if [ "${#names[@]}" -eq 0 ]; then
+    echo "No skills found in $SKILLS_HOME"
+    return 0
+  fi
+
+  local cols desccol
+  cols="$(tput cols 2>/dev/null || echo 80)"
+  [ "$namecol" -gt 30 ] && namecol=30
+  desccol=$(( cols - namecol - 4 ))
+  [ "$desccol" -lt 20 ] && desccol=20
+
+  echo "Available skills in $SKILLS_HOME:"
+  echo
+  local dir desc subs count=0
+  while IFS= read -r n; do
+    dir="$SKILLS_HOME/$n"
+    if [ -f "$dir/SKILL.md" ]; then
+      desc="$(extract_description "$dir/SKILL.md")"
+      [ -n "$desc" ] || desc="(no description)"
+    elif is_collection "$dir"; then
+      subs="$(find "$dir" -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')"
+      desc="[collection] $subs sub-skill(s)"
+    else
+      desc="(no SKILL.md)"
+    fi
+    [ "${#desc}" -gt "$desccol" ] && desc="${desc:0:$((desccol - 1))}…"
+    printf '  %-*s  %s\n' "$namecol" "$n" "$desc"
+    count=$((count + 1))
+  done < <(printf '%s\n' "${names[@]}" | LC_ALL=C sort)
+  echo
+  echo "$count skill(s). Link one with: $SCRIPT_NAME <name> [--meta]"
+}
+
 META=false
+LIST=false
 SKILLS=()
 for arg in "$@"; do
   case "$arg" in
     --meta) META=true ;;
+    --list) LIST=true ;;
     --help|-h) usage ;;
     -*) err "unknown flag '$arg'" ;;
     ''|.|..|*/*) err "invalid skill name '$arg'" ;;
@@ -39,14 +125,14 @@ for arg in "$@"; do
   esac
 done
 
+if $LIST; then
+  list_skills
+  exit 0
+fi
+
 [ "${#SKILLS[@]}" -ge 1 ] || usage
 
 command -v python3 >/dev/null 2>&1 || err "python3 is required (used for JSON edits)"
-
-is_collection() {
-  local p="$1"
-  [ -d "$p" ] && [ ! -f "$p/SKILL.md" ] && find "$p" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null | grep -q .
-}
 
 for skill in "${SKILLS[@]}"; do
   if [ -f "$SKILLS_HOME/$skill/SKILL.md" ]; then
