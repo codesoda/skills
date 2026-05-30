@@ -69,6 +69,57 @@ PROJECT_PI_SKILLS="$PROJECT_ROOT/.pi/skills"
 
 mkdir -p "$PROJECT_AGENTS_SKILLS"
 
+# Migrate an old-style real skills directory (e.g. a .claude/skills full of
+# per-skill symlinks, from before the folder-symlink layout) into the canonical
+# .agents/skills so it can be replaced by a single folder-level symlink.
+#
+# Safe by construction: a validation pass refuses to touch anything unless every
+# entry can be migrated losslessly, entries are then moved or de-duplicated, and
+# the directory is removed with rmdir (never rm -rf) so any unexpected leftover
+# aborts instead of being deleted.
+adopt_real_dir_into_canonical() {
+  local dir="$1"
+  local entry name canon
+  local had_dotglob had_nullglob
+  shopt -q dotglob && had_dotglob=1 || had_dotglob=0
+  shopt -q nullglob && had_nullglob=1 || had_nullglob=0
+  shopt -s dotglob nullglob
+  local -a entries=("$dir"/*)
+  [ "$had_dotglob" = 1 ] || shopt -u dotglob
+  [ "$had_nullglob" = 1 ] || shopt -u nullglob
+
+  # Pass 1: validate. Bail before mutating if any entry would collide with a
+  # different existing skill in .agents/skills.
+  for entry in "${entries[@]}"; do
+    name="$(basename "$entry")"
+    [ "$name" = ".DS_Store" ] && continue
+    canon="$PROJECT_AGENTS_SKILLS/$name"
+    if [ -e "$canon" ] || [ -L "$canon" ]; then
+      if ! { [ -L "$entry" ] && [ -L "$canon" ] && [ "$(readlink "$entry")" = "$(readlink "$canon")" ]; }; then
+        err "cannot migrate $dir: '$name' also exists in .agents/skills with different content; reconcile the two by hand, then re-run"
+      fi
+    fi
+  done
+
+  # Pass 2: move entries that are new, drop ones that already match.
+  local moved=0 dropped=0
+  for entry in "${entries[@]}"; do
+    name="$(basename "$entry")"
+    if [ "$name" = ".DS_Store" ]; then rm -f "$entry"; continue; fi
+    canon="$PROJECT_AGENTS_SKILLS/$name"
+    if [ ! -e "$canon" ] && [ ! -L "$canon" ]; then
+      mv "$entry" "$canon"
+      echo "    [adopt]  $name -> .agents/skills/$name"
+      moved=$((moved + 1))
+    else
+      rm -f "$entry"
+      dropped=$((dropped + 1))
+    fi
+  done
+  rmdir "$dir" || err "cannot migrate $dir: directory not empty after moving entries; inspect the leftovers manually"
+  echo "    (migrated $moved, dropped $dropped duplicate(s))"
+}
+
 ensure_folder_symlink() {
   local link="$1"
   local target="$2"
@@ -84,8 +135,17 @@ ensure_folder_symlink() {
     fi
     err "$link is a symlink to $current (expected $target)"
   fi
+  if [ -d "$link" ]; then
+    # Older layout: a real skills directory. Adopt its contents into the
+    # canonical .agents/skills, then replace it with the folder symlink.
+    echo "  [adopt]  $link is a real directory (older layout); migrating into .agents/skills"
+    adopt_real_dir_into_canonical "$link"
+    ln -s "$target" "$link"
+    echo "  [linked] $link -> $target  (migrated from real directory)"
+    return
+  fi
   if [ -e "$link" ]; then
-    err "$link exists and is not a symlink; refusing to clobber"
+    err "$link exists and is not a symlink or directory; refusing to clobber"
   fi
   ln -s "$target" "$link"
   echo "  [linked] $link -> $target"
