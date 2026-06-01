@@ -60,6 +60,23 @@ my-project/
 
 ## link.sh
 
+### Listing available skills (`--list`)
+
+Run `link.sh --list` to see every skill in the source library with its
+description; collections are tagged with their sub-skill count:
+
+```
+$ link.sh --list
+Available skills in ~/.skills/.agents/skills:
+
+  ab-test-setup    When the user wants to plan, design, or implement an A/B…
+  research         [collection] 5 sub-skill(s)
+  …
+```
+
+`--list` takes no skill name and ignores the current directory, so you can run
+it from anywhere to find the name to pass to `link.sh`.
+
 ### Auto mode (default)
 
 Symlinks skills directly into the project so agents auto-discover them:
@@ -86,6 +103,19 @@ This is useful when you have many skills but don't want them all loaded into eve
 |------|------------------------------|--------------|----------|
 | Auto | Yes | Every session | Core skills you always want available |
 | Meta | No (until invoked) | On demand via `/<name>` | Large libraries, situational skills |
+
+### Onboarding a project that already has skills
+
+If a project predates the folder-symlink layout — for example `.claude/skills`
+is a real directory full of per-skill symlinks — `link.sh` migrates it for you
+instead of refusing to run. It moves any skills unique to that directory into
+the canonical `.agents/skills`, drops exact duplicates, then replaces the
+directory with the usual `.claude/skills -> ../.agents/skills` symlink.
+
+Nothing unique is ever deleted: the migration validates first and, if an entry
+collides with a *different* skill already in `.agents/skills`, it stops so you
+can reconcile the two by hand. Re-running on an already-converted project is a
+no-op.
 
 ## Writing a skill
 
